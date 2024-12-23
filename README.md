@@ -50,6 +50,6 @@ The tool will:
 
 - Insert images starting from cell B4 in the specified sheet.
 - Scale the images to fit within the desired dimensions.
-- Insert page breaks after each image (except the last).
+- Insert page breaks after each images.
 
 
