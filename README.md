@@ -41,7 +41,7 @@ It automates the process of organizing test results in a structured manner withi
 Run the application with the following flags
 
 ```bash
-go run main.go -folder /Tenant\ User\ Manager/1/ -sheet "#1" -excel sample.xlsx
+go run main.go -folder Images/1/ -sheet "#1" -excel sample.xlsx
 ```
 
 ##Output
