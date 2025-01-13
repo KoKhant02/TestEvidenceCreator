@@ -41,15 +41,21 @@ It automates the process of organizing test results in a structured manner withi
 Run the application with the following flags
 
 ```bash
-go run main.go -folder Images/1/ -sheet "#1" -excel sample.xlsx
+go run main.go -f="./Evidences" -e="sample.xlsx"
 ```
 
 ##Output
 
 The tool will:
 
+- Detect all sub folders from provided parent folder.
+- Sort the sub folders and add these sorted sub folders as sheet.
+- Sheet names will be same as (# + sub folder names).
 - Insert images starting from cell B4 in the specified sheet.
 - Scale the images to fit within the desired dimensions.
 - Insert page breaks after each images.
+- Sheet name #0 will be rename as #Preparation sheet.
+- PageLayout will be A4, Landscape orientation and "Fit All Rows on One Page".
+- Sheets in the Excel file : [Final Template #Preparation #1 #2 #3]
 
 
