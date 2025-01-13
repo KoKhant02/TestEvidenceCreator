@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -142,7 +141,7 @@ func GetImageFiles(folderPath string) ([]ImageInfo, error) {
 		if err != nil {
 			return fmt.Errorf("error accessing file: %v", err)
 		}
-		if !info.IsDir() && !strings.Contains(info.Name(), "Zone.Identifier") {
+		if !info.IsDir() {
 			imageFiles = append(imageFiles, path)
 		}
 		return nil
@@ -151,17 +150,21 @@ func GetImageFiles(folderPath string) ([]ImageInfo, error) {
 		return nil, fmt.Errorf("error walking through folder %s: %v", folderPath, err)
 	}
 
-	// Sort the image files based on numbers in the filenames
+	// Sort the image files based on the desired logic
 	sort.Slice(imageFiles, func(i, j int) bool {
 		re := regexp.MustCompile(`\d+`)
-		hasNumI := re.MatchString(imageFiles[i])
-		hasNumJ := re.MatchString(imageFiles[j])
+		hasNumI := re.MatchString(filepath.Base(imageFiles[i]))
+		hasNumJ := re.MatchString(filepath.Base(imageFiles[j]))
 
-		if hasNumI && !hasNumJ {
-			return false
-		} else if !hasNumI && hasNumJ {
+		// Prioritize files without numbers
+		if !hasNumI && hasNumJ {
 			return true
 		}
+		if hasNumI && !hasNumJ {
+			return false
+		}
+
+		// If both have numbers or neither have numbers, sort lexicographically
 		return imageFiles[i] < imageFiles[j]
 	})
 
