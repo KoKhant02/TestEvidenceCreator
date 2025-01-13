@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -19,84 +21,134 @@ type ImageInfo struct {
 	FilePath string
 }
 
-func main() {
-	// Define flags for the image folder path and sheet name
-	folderPath := flag.String("folder", "", "Path to the folder containing images")
-	sheetName := flag.String("sheet", "", "Name of the sheet")
-	templatePath := flag.String("excel", "", "Name of the excel")
-
-	// Parse the command-line flags
-	flag.Parse()
-
-	// Validate inputs
-	if err := validateInputs(*folderPath, *sheetName, *templatePath); err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	// Get sorted image files
-	imageFiles, err := getImageFiles(*folderPath)
-	if err != nil {
-		fmt.Printf("Error walking through the folder: %v\n", err)
-		return
-	}
-
-	// Open the existing Excel template file
-	f, err := openExcelFile(*templatePath)
-	if err != nil {
-		fmt.Printf("Failed to open template file: %v\n", err)
-		return
-	}
-
-	// Start inserting images at a specific row and column
-	startCell := "B4" // Starting position for the images
-	err = pasteImagesHorizontally(f, *sheetName, imageFiles, startCell)
-	if err != nil {
-		fmt.Printf("Error inserting images: %v\n", err)
-		return
-	}
-
-	// Save the changes directly to the same file
-	if err := saveExcelFile(f); err != nil {
-		fmt.Printf("Failed to save updated file: %v\n", err)
-		return
-	}
-
-	fmt.Println("Images inserted successfully into the template file:", *templatePath)
+// Processor defines the interface for processing tasks
+type Processor interface {
+	Process() error
 }
 
-// validateInputs checks if the provided folder, sheet, and excel file paths are valid.
-func validateInputs(folderPath, sheetName, templatePath string) error {
-	if folderPath == "" {
-		return fmt.Errorf("Please provide the image folder path using the -folder flag.")
+// ExcelProcessor processes Excel related tasks
+type ExcelProcessor struct {
+	f               *excelize.File
+	parentFolder    string
+	templateSheet   string
+	sampleSheetName string
+}
+
+// ImageProcessor processes image-related tasks
+type ImageProcessor struct {
+	f          *excelize.File
+	sheetName  string
+	folderPath string
+}
+
+// AppContext holds the context for the overall application, including the processors
+type AppContext struct {
+	ExcelProcessor *ExcelProcessor
+	ImageProcessor *ImageProcessor
+}
+
+// NewExcelProcessor creates a new instance of ExcelProcessor
+func NewExcelProcessor(f *excelize.File, parentFolder, templateSheet, sampleSheetName string) *ExcelProcessor {
+	return &ExcelProcessor{
+		f:               f,
+		parentFolder:    parentFolder,
+		templateSheet:   templateSheet,
+		sampleSheetName: sampleSheetName,
 	}
-	if sheetName == "" {
-		return fmt.Errorf("Please provide the sheet name using the -sheet flag.")
+}
+
+// NewImageProcessor creates a new instance of ImageProcessor
+func NewImageProcessor(f *excelize.File, sheetName, folderPath string) *ImageProcessor {
+	return &ImageProcessor{
+		f:          f,
+		sheetName:  sheetName,
+		folderPath: folderPath,
 	}
-	if templatePath == "" {
-		return fmt.Errorf("Please provide the excel file path using the -excel flag.")
+}
+
+// Process processes Excel related tasks (creating sheets, etc.)
+func (ep *ExcelProcessor) Process() error {
+	// Get sorted list of child folders
+	subFolders, err := GetSubFolders(ep.parentFolder)
+	if err != nil {
+		return fmt.Errorf("error scanning parent folder: %v", err)
 	}
-	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
-		return fmt.Errorf("The folder path does not exist: %s", folderPath)
+
+	// Sort folder names numerically
+	SortNumeric(subFolders)
+
+	// Walk through the parent folder and process each sorted subfolder
+	for _, folder := range subFolders {
+		folderPath := filepath.Join(ep.parentFolder, folder)
+		ip := NewImageProcessor(ep.f, "#"+folder, folderPath)
+		if err := ip.Process(); err != nil {
+			return fmt.Errorf("error processing images in folder %s: %v", folder, err)
+		}
 	}
+
 	return nil
 }
 
-// getImageFiles walks through the folder and returns sorted image files
-func getImageFiles(folderPath string) ([]ImageInfo, error) {
+// Process processes image-related tasks (inserting images)
+func (ip *ImageProcessor) Process() error {
+	fmt.Println("Started adding image for folder:", ip.folderPath)
+	// Find the sample sheet
+	sampleSheetIndex, err := ip.f.GetSheetIndex("Final Template")
+	if err != nil || sampleSheetIndex == -1 {
+		return fmt.Errorf("failed to find sheet 'Final Template': %v", err)
+	}
+
+	// Create a new sheet based on the "Final Template" sheet
+	newSheetIndex, err := ip.f.NewSheet("#" + filepath.Base(ip.folderPath))
+	if err != nil {
+		return fmt.Errorf("failed to create new sheet: %v", err)
+	}
+	// Copy the content of "Final Template" sheet to the new sheet
+	err = ip.f.CopySheet(sampleSheetIndex, newSheetIndex)
+	if err != nil {
+		return fmt.Errorf("failed to copy 'Final Template' sheet: %v", err)
+	}
+
+	// Get sorted image files from the child folder
+	imageFiles, err := GetImageFiles(ip.folderPath)
+	if err != nil {
+		return fmt.Errorf("error getting image files from folder %s: %v", ip.folderPath, err)
+	}
+
+	// Start inserting images at a specific row and column
+	startCell := "B4"
+	err = PasteImagesHorizontally(ip.f, "#"+filepath.Base(ip.folderPath), imageFiles, startCell)
+	if err != nil {
+		return fmt.Errorf("error inserting images for sheet %s: %v", "#"+filepath.Base(ip.folderPath), err)
+	}
+
+	return nil
+}
+
+// GetSheetList lists all sheet names in the Excel file and prints them
+func GetSheetList(f *excelize.File) ([]string, error) {
+	sheets := f.GetSheetList()
+
+	// Print the sheet names to the console
+	fmt.Println("\nSheets in the Excel file :", sheets)
+
+	return sheets, nil
+}
+
+// GetImageFiles walks through the folder and returns sorted image files
+func GetImageFiles(folderPath string) ([]ImageInfo, error) {
 	var imageFiles []string
 	err := filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("error accessing file: %v", err)
 		}
-		if !info.IsDir() {
-			fileName := filepath.Base(path)
-			imageFiles = append(imageFiles, fileName)
+		if !info.IsDir() && !strings.Contains(info.Name(), "Zone.Identifier") {
+			imageFiles = append(imageFiles, path)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error walking through folder %s: %v", folderPath, err)
 	}
 
 	// Sort the image files based on numbers in the filenames
@@ -115,23 +167,13 @@ func getImageFiles(folderPath string) ([]ImageInfo, error) {
 
 	var images []ImageInfo
 	for _, fileName := range imageFiles {
-		images = append(images, ImageInfo{FilePath: folderPath + fileName})
+		images = append(images, ImageInfo{FilePath: fileName})
 	}
 	return images, nil
 }
 
-// openExcelFile opens the specified Excel template file
-func openExcelFile(templatePath string) (*excelize.File, error) {
-	return excelize.OpenFile(templatePath)
-}
-
-// saveExcelFile saves the Excel file
-func saveExcelFile(f *excelize.File) error {
-	return f.Save()
-}
-
-// pasteImagesHorizontally places images horizontally in the Excel sheet
-func pasteImagesHorizontally(f *excelize.File, sheetName string, images []ImageInfo, startCell string) error {
+// PasteImagesHorizontally places images horizontally in the Excel sheet
+func PasteImagesHorizontally(f *excelize.File, sheetName string, images []ImageInfo, startCell string) error {
 	currentCol, row, err := excelize.CellNameToCoordinates(startCell)
 	if err != nil {
 		return fmt.Errorf("invalid starting cell: %v", err)
@@ -144,9 +186,9 @@ func pasteImagesHorizontally(f *excelize.File, sheetName string, images []ImageI
 		cellName, _ := excelize.CoordinatesToCellName(currentCol, row)
 
 		// Get original dimensions of the image
-		originalWidth, originalHeight, err := getDimensions(img.FilePath)
+		originalWidth, originalHeight, err := GetDimensions(img.FilePath)
 		if err != nil {
-			return fmt.Errorf("failed to get image dimensions: %v", err)
+			return fmt.Errorf("failed to get image dimensions for %s: %v", img.FilePath, err)
 		}
 
 		// Calculate scaling factors
@@ -154,31 +196,34 @@ func pasteImagesHorizontally(f *excelize.File, sheetName string, images []ImageI
 		scaleY := float64(desiredHeight) / float64(originalHeight)
 
 		// Add the image at the current position
-		err = addImage(f, sheetName, img.FilePath, cellName, scaleX, scaleY)
+		err = InsertImage(f, sheetName, img.FilePath, cellName, scaleX, scaleY)
 		if err != nil {
-			return fmt.Errorf("failed to insert image %s: %v", img.FilePath, err)
+			return fmt.Errorf("failed to insert image %s: %v", img.FilePath, cellName)
 		}
 
 		// Move to the next column with spacing
 		currentCol += 37
 
-		// Insert a page break after the current image except for the last one
-		if index > 0 {
-			pageBreakCell, _ := excelize.CoordinatesToCellName(currentCol-1, 40)
-			err = f.InsertPageBreak(sheetName, pageBreakCell)
-			if err != nil {
-				return fmt.Errorf("failed to insert page break at %s: %v", pageBreakCell, err)
-			}
+		// Insert a page break after every 37th column
+		PageBreakCell, _ := excelize.CoordinatesToCellName(currentCol-1, 40)
+		err = AddPageBreak(f, sheetName, PageBreakCell)
+		if err != nil {
+			return fmt.Errorf("failed to insert page break at %s: %v", PageBreakCell, err)
 		}
+
+		fmt.Println("-", "Page break inserted at Column:", PageBreakCell)
+		fmt.Println("-", "Image", index+1, "inserted at Cell:", cellName)
+		fmt.Print("\n")
+
 	}
 	return nil
 }
 
-// addImage adds an image at a specific cell in the Excel sheet
-func addImage(f *excelize.File, sheetName, filePath, cell string, scaleX, scaleY float64) error {
+// InsertImage adds an image at a specific cell in the Excel sheet
+func InsertImage(f *excelize.File, sheetName, filePath, cell string, scaleX, scaleY float64) error {
 	imgBytes, err := os.ReadFile(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to read image file: %v", err)
+		return fmt.Errorf("failed to read image file %s: %v", filePath, err)
 	}
 
 	err = f.AddPictureFromBytes(sheetName, cell, &excelize.Picture{
@@ -191,20 +236,175 @@ func addImage(f *excelize.File, sheetName, filePath, cell string, scaleX, scaleY
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to insert image: %v", err)
+		return fmt.Errorf("failed to insert image %s at %s: %v", filePath, cell, err)
 	}
 	return nil
 }
 
-func getDimensions(filePath string) (int, int, error) {
+// AddPageBreak inserts a page break in the specified cell
+func AddPageBreak(f *excelize.File, sheetName, cell string) error {
+	return f.InsertPageBreak(sheetName, cell)
+}
+
+// GetDimensions retrieves the dimensions (width, height) of the image
+func GetDimensions(filePath string) (int, int, error) {
 	imgFile, err := os.Open(filePath)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("failed to open image file %s: %v", filePath, err)
 	}
 	defer imgFile.Close()
 	img, _, err := image.Decode(imgFile)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("failed to decode image %s: %v", filePath, err)
 	}
 	return img.Bounds().Max.X, img.Bounds().Max.Y, nil
+}
+
+// SaveExcel saves the Excel file
+func SaveExcel(f *excelize.File) error {
+	err := f.Save()
+	if err != nil {
+		return fmt.Errorf("failed to save Excel file: %v", err)
+	}
+	return nil
+}
+
+// SortNumeric sorts folder names numerically
+func SortNumeric(folders []string) {
+	sort.Slice(folders, func(i, j int) bool {
+		numI, errI := strconv.Atoi(folders[i])
+		numJ, errJ := strconv.Atoi(folders[j])
+
+		// Handle conversion errors gracefully
+		if errI != nil || errJ != nil {
+			// Fallback to string comparison if conversion fails
+			return folders[i] < folders[j]
+		}
+		return numI < numJ
+	})
+}
+
+// GetSubFolders gets the subfolders in the parent directory
+func GetSubFolders(parentFolder string) ([]string, error) {
+	var subfolders []string
+	err := filepath.Walk(parentFolder, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() && path != parentFolder {
+			relativePath, err := filepath.Rel(parentFolder, path)
+			if err != nil {
+				return err
+			}
+			subfolders = append(subfolders, relativePath)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return subfolders, nil
+}
+
+// SetPageSettings configures the page layout settings for a sheet.
+func SetPageSettings(f *excelize.File, sheetName string) error {
+	// Set the orientation to landscape
+	orientation := "landscape" // Use string directly for landscape orientation
+	err := f.SetPageLayout(sheetName, &excelize.PageLayoutOptions{
+		Orientation: &orientation, // Use "landscape" for landscape orientation
+		Size:        IntPtr(9),
+		FitToHeight: IntPtr(1),
+		FitToWidth:  IntPtr(0),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set page layout: %v", err)
+	}
+
+	return nil
+}
+
+// IntPtr is a helper function to create a pointer to an int
+func IntPtr(i int) *int {
+	return &i
+}
+
+// After processing the sheets and images, rename sheet "#0" to "#Preparation"
+func RenamePreparationSheet(f *excelize.File) error {
+	// Check if sheet #0 exists
+	sheetIndex, err := f.GetSheetIndex("#0")
+	if err != nil || sheetIndex == -1 {
+		return fmt.Errorf("sheet #0 not found")
+	}
+
+	// Rename sheet #0 to #Preparation
+	err = f.SetSheetName("#0", "#Preparation")
+	if err != nil {
+		return fmt.Errorf("failed to rename sheet #0 to #Preparation: %v", err)
+	}
+
+	return nil
+}
+func main() {
+	// Define flags for the parent folder path and Excel template path
+	parentFolderPath := flag.String("f", "", "Path to the parent folder containing child folders")
+	templatePath := flag.String("e", "", "Path to the Excel template")
+
+	// Parse the command-line flags
+	flag.Parse()
+
+	// Validate inputs
+	if *parentFolderPath == "" || *templatePath == "" {
+		fmt.Println("Please provide the parent folder path using the '-f' flag")
+		fmt.Println("Please provide the Excel template path using the '-e' flag.")
+		return
+	}
+
+	// Open the Excel file
+	f, err := excelize.OpenFile(*templatePath)
+	if err != nil {
+		fmt.Printf("Failed to open template file: %v\n", err)
+		return
+	}
+
+	// Create an ExcelProcessor for processing Excel tasks
+	ep := NewExcelProcessor(f, *parentFolderPath, *templatePath, "Final Template")
+
+	// Start processing Excel related tasks
+	err = ep.Process()
+	if err != nil {
+		fmt.Printf("Error processing Excel tasks: %v\n", err)
+		return
+	}
+
+	// Rename sheet "#0" to "#Preparation"
+	err = RenamePreparationSheet(f)
+	if err != nil {
+		fmt.Printf("Error renaming sheet: %v\n", err)
+		return
+	}
+
+	// Set page settings for each sheet
+	sheets, err := GetSheetList(f)
+	if err != nil {
+		fmt.Printf("Error getting sheet list: %v\n", err)
+		return
+	}
+
+	// Iterate through sheets and set page settings
+	for _, sheetName := range sheets {
+		err = SetPageSettings(f, sheetName)
+		if err != nil {
+			fmt.Printf("Error setting page layout for sheet %s: %v\n", sheetName, err)
+			return
+		}
+	}
+
+	// Save the Excel file
+	err = SaveExcel(f)
+	if err != nil {
+		fmt.Printf("Failed to save updated file: %v\n", err)
+		return
+	}
+
+	fmt.Println("All sheets and images processed successfully.")
 }

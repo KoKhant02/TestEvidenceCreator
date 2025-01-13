@@ -1,8 +1,11 @@
-module TestEvidenceCreator
+module resize
 
 go 1.22.5
 
-require github.com/xuri/excelize/v2 v2.9.0
+require (
+	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
+	github.com/xuri/excelize/v2 v2.9.0
+)
 
 require (
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
